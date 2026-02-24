@@ -107,7 +107,7 @@ class TicketSelect(discord.ui.Select):
         ]
 
         super().__init__(
-            placeholder="Kategori seç...",
+            placeholder="Bilgi Almak İçin Veya Pack Almak İçin Ticket Aç",
             options=options,
             custom_id="ticket_select"
         )
