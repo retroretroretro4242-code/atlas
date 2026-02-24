@@ -1,15 +1,14 @@
 import os
 import discord
 from discord.ext import commands
-from discord import app_commands
 import time
 import datetime
 from collections import defaultdict
 
 TOKEN = os.getenv("TOKEN")
 
-TICKET_CATEGORY_ID = 1474827965643886864  # Ticketların açılacağı kategori
-LOG_CATEGORY_ID = 1474827965643886864     # Log kategorisi (istersen ayrı yap)
+TICKET_CATEGORY_ID = 1474827965643886864
+LOG_CHANNEL_ID = 1474827965643886864  # Transcript atılacak kanal ID (TEXT KANAL OLMALI)
 
 YETKILI_ROLLER = [
     1474831393644220599,
@@ -38,6 +37,7 @@ caps_limit = 70
 async def on_ready():
     await bot.tree.sync()
     bot.add_view(TicketView())
+    bot.add_view(TicketButtons())
     print(f"{bot.user} aktif!")
 
 
@@ -58,7 +58,7 @@ async def on_message(message):
         if not any(role.id in YETKILI_ROLLER for role in message.author.roles):
             await message.delete()
             await message.channel.send(
-                f"{message.author.mention} link paylaşamaz! (Sadece yetkililer)",
+                f"{message.author.mention} link paylaşamaz!",
                 delete_after=3
             )
 
@@ -78,55 +78,6 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-# ================= RAID =================
-@bot.event
-async def on_member_join(member):
-    now = time.time()
-    join_cache.append(now)
-    recent = [t for t in join_cache if now - t < 10]
-
-    if len(recent) > 8:
-        await member.guild.edit(verification_level=discord.VerificationLevel.high)
-        print("Raid koruma aktif!")
-
-
-# ================= MODERATION =================
-@bot.tree.command(name="mute", description="Kullanıcıyı susturur")
-async def mute(interaction: discord.Interaction, member: discord.Member, süre: int):
-    if not interaction.user.guild_permissions.moderate_members:
-        return await interaction.response.send_message("Yetkin yok!", ephemeral=True)
-
-    until = discord.utils.utcnow() + datetime.timedelta(minutes=süre)
-    await member.timeout(until)
-    await interaction.response.send_message(f"{member.mention} {süre} dakika susturuldu.")
-
-
-@bot.tree.command(name="warn", description="Kullanıcıya uyarı verir")
-async def warn(interaction: discord.Interaction, member: discord.Member):
-    warn_data[member.id] += 1
-    await interaction.response.send_message(
-        f"{member.mention} uyarıldı. Toplam warn: {warn_data[member.id]}"
-    )
-
-
-@bot.tree.command(name="kick", description="Kullanıcıyı atar")
-async def kick(interaction: discord.Interaction, member: discord.Member):
-    if not interaction.user.guild_permissions.kick_members:
-        return await interaction.response.send_message("Yetki yok!", ephemeral=True)
-
-    await member.kick()
-    await interaction.response.send_message(f"{member.mention} atıldı.")
-
-
-@bot.tree.command(name="ban", description="Kullanıcıyı banlar")
-async def ban(interaction: discord.Interaction, member: discord.Member):
-    if not interaction.user.guild_permissions.ban_members:
-        return await interaction.response.send_message("Yetki yok!", ephemeral=True)
-
-    await member.ban()
-    await interaction.response.send_message(f"{member.mention} banlandı.")
-
-
 # ================= TICKET SELECT =================
 class TicketSelect(discord.ui.Select):
     def __init__(self):
@@ -140,13 +91,13 @@ class TicketSelect(discord.ui.Select):
         super().__init__(
             placeholder="Destek kategorisi seç...",
             options=options,
-            custom_id="ticket_category_select"
+            custom_id="ticket_select_menu"
         )
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id in open_tickets:
             return await interaction.response.send_message(
-                "Zaten açık bir ticketin var.",
+                "Zaten açık ticketin var.",
                 ephemeral=True
             )
 
@@ -156,13 +107,21 @@ class TicketSelect(discord.ui.Select):
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True
+            )
         }
 
         for role_id in YETKILI_ROLLER:
             role = guild.get_role(role_id)
             if role:
-                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+                overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True
+                )
 
         channel = await guild.create_text_channel(
             name=f"ticket-{interaction.user.name}",
@@ -177,29 +136,17 @@ class TicketSelect(discord.ui.Select):
             description=(
                 f"**Kategori:** {selected}\n"
                 f"**Oluşturan:** {interaction.user.mention}\n\n"
-                "Lütfen sorununuzu detaylı şekilde yazınız."
+                "Sorununuzu detaylı yazınız."
             ),
             color=0x5865F2
         )
 
-        await channel.send(embed=embed)
+        await channel.send(embed=embed, view=TicketButtons())
 
         await interaction.response.send_message(
             f"Ticket oluşturuldu: {channel.mention}",
             ephemeral=True
         )
-
-        # LOG
-        log_embed = discord.Embed(
-            title="📁 Yeni Ticket",
-            description=f"{interaction.user} | {selected}\n{channel.mention}",
-            color=discord.Color.green()
-        )
-
-        log_category = guild.get_channel(LOG_CATEGORY_ID)
-        if log_category and isinstance(log_category, discord.CategoryChannel):
-            if log_category.text_channels:
-                await log_category.text_channels[0].send(embed=log_embed)
 
 
 class TicketView(discord.ui.View):
@@ -208,13 +155,59 @@ class TicketView(discord.ui.View):
         self.add_item(TicketSelect())
 
 
+# ================= CLOSE BUTTON =================
+class CloseButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="🔒 Ticket Kapat",
+            style=discord.ButtonStyle.danger,
+            custom_id="ticket_close_button"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not any(role.id in YETKILI_ROLLER for role in interaction.user.roles):
+            return await interaction.response.send_message("Yetkin yok.", ephemeral=True)
+
+        channel = interaction.channel
+
+        # Transcript oluştur
+        transcript = []
+        async for msg in channel.history(limit=None, oldest_first=True):
+            transcript.append(
+                f"[{msg.created_at.strftime('%Y-%m-%d %H:%M')}] {msg.author}: {msg.content}"
+            )
+
+        file_name = f"transcript-{channel.id}.txt"
+        with open(file_name, "w", encoding="utf-8") as f:
+            f.write("\n".join(transcript))
+
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(
+                f"📁 Transcript - {channel.name}",
+                file=discord.File(file_name)
+            )
+
+        # open_tickets temizle
+        for user_id, ch_id in list(open_tickets.items()):
+            if ch_id == channel.id:
+                del open_tickets[user_id]
+
+        await channel.delete()
+
+
+class TicketButtons(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(CloseButton())
+
+
 @bot.tree.command(name="ticketpanel", description="Atlas Destek Paneli")
 async def ticketpanel(interaction: discord.Interaction):
-
     embed = discord.Embed(
-        title="🚀 Atlas Project Destek Paneli",
+        title="🚀 Atlas Destek Paneli",
         description=(
-            "Destek almak için aşağıdan kategori seç.\n\n"
+            "Aşağıdan kategori seçerek ticket oluştur.\n\n"
             "🖥️ Sunucu\n"
             "📦 Pack\n"
             "⚙️ Plugin Pack\n"
@@ -223,10 +216,7 @@ async def ticketpanel(interaction: discord.Interaction):
         color=0x5865F2
     )
 
-    await interaction.response.send_message(
-        embed=embed,
-        view=TicketView()
-    )
+    await interaction.response.send_message(embed=embed, view=TicketView())
 
 
 # ================= START =================
