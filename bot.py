@@ -4,11 +4,13 @@ from discord.ext import commands
 import time
 import datetime
 from collections import defaultdict
+import threading
+from flask import Flask
 
 TOKEN = os.getenv("TOKEN")
 
-TICKET_CATEGORY_ID = 1474827965643886864
-LOG_CHANNEL_ID = 1474827965643886864  # Transcript atılacak kanal ID (TEXT KANAL OLMALI)
+TICKET_CATEGORY_ID = 1474827965643886864   # Ticket kategori ID
+LOG_CHANNEL_ID = 1474827965643886864       # Transcript atılacak TEXT kanal ID
 
 YETKILI_ROLLER = [
     1474831393644220599,
@@ -32,6 +34,23 @@ link_block = True
 caps_limit = 70
 
 
+# ================= KEEP ALIVE =================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot Aktif"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = threading.Thread(target=run)
+    t.start()
+
+keep_alive()
+
+
 # ================= READY =================
 @bot.event
 async def on_ready():
@@ -49,25 +68,26 @@ async def on_message(message):
 
     content = message.content
 
+    # Küfür
     if any(word in content.lower() for word in banned_words):
         await message.delete()
         await message.channel.send(f"{message.author.mention} küfür yasak!", delete_after=3)
         warn_data[message.author.id] += 1
 
+    # Link engel
     if link_block and ("http://" in content or "https://" in content):
         if not any(role.id in YETKILI_ROLLER for role in message.author.roles):
             await message.delete()
-            await message.channel.send(
-                f"{message.author.mention} link paylaşamaz!",
-                delete_after=3
-            )
+            await message.channel.send(f"{message.author.mention} link paylaşamaz!", delete_after=3)
 
+    # Caps engel
     if len(content) > 5:
         upper = sum(1 for c in content if c.isupper())
         if upper / len(content) * 100 > caps_limit:
             await message.delete()
             await message.channel.send("Caps lock yasak!", delete_after=3)
 
+    # Spam engel
     now = time.time()
     spam_cache[message.author.id].append(now)
     spam_cache[message.author.id] = [t for t in spam_cache[message.author.id] if now - t < 4]
@@ -76,6 +96,37 @@ async def on_message(message):
         await message.delete()
 
     await bot.process_commands(message)
+
+
+# ================= RAID KORUMA =================
+@bot.event
+async def on_member_join(member):
+    now = time.time()
+    join_cache.append(now)
+    recent = [t for t in join_cache if now - t < 10]
+
+    if len(recent) > 8:
+        await member.guild.edit(verification_level=discord.VerificationLevel.high)
+        print("Raid koruma aktif!")
+
+
+# ================= MODERATION =================
+@bot.tree.command(name="mute", description="Kullanıcıyı susturur")
+async def mute(interaction: discord.Interaction, member: discord.Member, süre: int):
+    if not interaction.user.guild_permissions.moderate_members:
+        return await interaction.response.send_message("Yetkin yok!", ephemeral=True)
+
+    until = discord.utils.utcnow() + datetime.timedelta(minutes=süre)
+    await member.timeout(until)
+    await interaction.response.send_message(f"{member.mention} {süre} dakika susturuldu.")
+
+
+@bot.tree.command(name="warn", description="Kullanıcıya uyarı verir")
+async def warn(interaction: discord.Interaction, member: discord.Member):
+    warn_data[member.id] += 1
+    await interaction.response.send_message(
+        f"{member.mention} uyarıldı. Toplam warn: {warn_data[member.id]}"
+    )
 
 
 # ================= TICKET SELECT =================
@@ -132,12 +183,8 @@ class TicketSelect(discord.ui.Select):
         open_tickets[interaction.user.id] = channel.id
 
         embed = discord.Embed(
-            title="🎫 Atlas Project Destek",
-            description=(
-                f"**Kategori:** {selected}\n"
-                f"**Oluşturan:** {interaction.user.mention}\n\n"
-                "Sorununuzu detaylı yazınız."
-            ),
+            title="🎫 Atlas Destek",
+            description=f"Kategori: {selected}\nOluşturan: {interaction.user.mention}",
             color=0x5865F2
         )
 
@@ -147,12 +194,6 @@ class TicketSelect(discord.ui.Select):
             f"Ticket oluşturuldu: {channel.mention}",
             ephemeral=True
         )
-
-
-class TicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(TicketSelect())
 
 
 # ================= CLOSE BUTTON =================
@@ -170,7 +211,6 @@ class CloseButton(discord.ui.Button):
 
         channel = interaction.channel
 
-        # Transcript oluştur
         transcript = []
         async for msg in channel.history(limit=None, oldest_first=True):
             transcript.append(
@@ -184,11 +224,10 @@ class CloseButton(discord.ui.Button):
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
             await log_channel.send(
-                f"📁 Transcript - {channel.name}",
+                f"Transcript - {channel.name}",
                 file=discord.File(file_name)
             )
 
-        # open_tickets temizle
         for user_id, ch_id in list(open_tickets.items()):
             if ch_id == channel.id:
                 del open_tickets[user_id]
@@ -202,22 +241,21 @@ class TicketButtons(discord.ui.View):
         self.add_item(CloseButton())
 
 
-@bot.tree.command(name="ticketpanel", description="Atlas Destek Paneli")
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(TicketSelect())
+
+
+@bot.tree.command(name="ticketpanel", description="Destek paneli")
 async def ticketpanel(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🚀 Atlas Destek Paneli",
-        description=(
-            "Aşağıdan kategori seçerek ticket oluştur.\n\n"
-            "🖥️ Sunucu\n"
-            "📦 Pack\n"
-            "⚙️ Plugin Pack\n"
-            "🤖 Discord Bot"
-        ),
+        description="Kategori seçerek ticket oluştur.",
         color=0x5865F2
     )
 
     await interaction.response.send_message(embed=embed, view=TicketView())
 
 
-# ================= START =================
 bot.run(TOKEN)
