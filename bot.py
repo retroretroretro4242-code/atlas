@@ -46,28 +46,46 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    content = message.content
+    # Yetkili mi kontrol et
+    is_staff = any(role.id in YETKILI_ROLLER for role in message.author.roles)
 
-    if any(word in content.lower() for word in banned_words):
-        await message.delete()
-        await message.channel.send("Küfür yasak!", delete_after=3)
-        warn_data[message.author.id] += 1
+    content = message.content.lower()
 
-    if len(content) > 5:
-        upper = sum(1 for c in content if c.isupper())
-        if upper / len(content) * 100 > caps_limit:
+    # ================= KÜFÜR =================
+    if not is_staff:
+        if any(word in content for word in banned_words):
             await message.delete()
-            await message.channel.send("Caps yasak!", delete_after=3)
+            await message.channel.send("Küfür yasak!", delete_after=3)
+            warn_data[message.author.id] += 1
+            return
 
+    # ================= CAPS =================
+    if not is_staff:
+        if len(message.content) > 5:
+            upper = sum(1 for c in message.content if c.isupper())
+            if upper / len(message.content) * 100 > caps_limit:
+                await message.delete()
+                await message.channel.send("Caps yasak!", delete_after=3)
+                return
+
+    # ================= LINK =================
+    if not is_staff:
+        if "http://" in content or "https://" in content or "discord.gg" in content:
+            await message.delete()
+            await message.channel.send("Link paylaşmak yasak!", delete_after=3)
+            return
+
+    # ================= SPAM =================
     now = time.time()
     spam_cache[message.author.id].append(now)
     spam_cache[message.author.id] = [t for t in spam_cache[message.author.id] if now - t < 4]
 
-    if len(spam_cache[message.author.id]) > 6:
-        await message.delete()
+    if not is_staff:
+        if len(spam_cache[message.author.id]) > 6:
+            await message.delete()
+            return
 
     await bot.process_commands(message)
-
 
 # ================= RAID =================
 @bot.event
@@ -100,14 +118,15 @@ async def warn(interaction: discord.Interaction, member: discord.Member):
 class TicketSelect(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Sunucu", emoji="🖥️"),
-            discord.SelectOption(label="Pack", emoji="📦"),
-            discord.SelectOption(label="Plugin Pack", emoji="⚙️"),
-            discord.SelectOption(label="Discord Bot", emoji="🤖"),
+            discord.SelectOption(label="Sipariş", description="Yeni sipariş vermek istiyorum", emoji="🛒"),
+            discord.SelectOption(label="Destek", description="Bir sorunum var", emoji="🛠️"),
+            discord.SelectOption(label="Proje İsteği", description="Özel proje talebi", emoji="⭐"),
+            discord.SelectOption(label="Ücretsiz Proje", description="Ücretsiz proje bilgisi", emoji="🎁"),
+            discord.SelectOption(label="Diğer", description="Diğer konular", emoji="❓"),
         ]
 
         super().__init__(
-            placeholder="Bilgi Almak İçin Veya Pack Almak İçin Ticket Aç",
+            placeholder="Bir kategori seç...",
             options=options,
             custom_id="ticket_select"
         )
@@ -149,8 +168,17 @@ class TicketSelect(discord.ui.Select):
 
         open_tickets[interaction.user.id] = channel.id
 
+        embed = discord.Embed(
+            title="🎫 Atlas Project Destek",
+            description=f"{interaction.user.mention} talebiniz oluşturuldu.\n\nYetkili ekip en kısa sürede ilgilenecektir.",
+            color=0x2b2d31
+        )
+
+        embed.set_footer(text="Atlas Project Destek Sistemi")
+
         await channel.send(
-            f"{interaction.user.mention} destek ekibi seninle ilgilenecek.",
+            content=" ".join([f"<@&{r}>" for r in YETKILI_ROLLER]),
+            embed=embed,
             view=TicketButtons()
         )
 
@@ -206,10 +234,29 @@ class TicketView(discord.ui.View):
         self.add_item(TicketSelect())
 
 
-@bot.tree.command(name="ticketpanel", description="Ticket paneli")
+@bot.tree.command(name="ticketpanel", description="Atlas Project Ticket Paneli")
 async def ticketpanel(interaction: discord.Interaction):
+
+    embed = discord.Embed(
+        title="📩 Atlas Project - Destek Merkezi",
+        description=(
+            "**Destek Merkezi Hakkında**\n"
+            "Aşağıdaki kategorilerden uygun olanı seçerek hemen ticket oluşturabilirsiniz.\n\n"
+            "⚠ Gereksiz ticket açmayınız."
+        ),
+        color=0x2b2d31
+    )
+
+    embed.add_field(
+        name="Sunucu Bilgisi",
+        value="Kuralları okumayı unutmayın.",
+        inline=False
+    )
+
+    embed.set_footer(text="Atlas Project © 2026")
+
     await interaction.response.send_message(
-        "Kategori seç:",
+        embed=embed,
         view=TicketView()
     )
 
